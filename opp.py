@@ -1,15 +1,27 @@
 import streamlit as st
 import pandas as pd
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
+from datetime import datetime, timedelta, date
 import json
 import os
-from datetime import datetime, timedelta
-import openpyxl
+import io
 import re
+from pathlib import Path
+import unicodedata
 
-# --- 設定・初期化 ---
-st.set_page_config(page_title="禅道会Tシャツ在庫管理", layout="wide")
+# --- 設定 ---
+PAGE_TITLE = "Tシャツ＆タグ在庫管理システム"
+PAGE_ICON = "👕"
 
-DATA_FILE = "inventory_db.json"
+st.set_page_config(
+    page_title=PAGE_TITLE,
+    page_icon=PAGE_ICON,
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# --- 定数 ---
 TSHIRT_TYPES = [
     'パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし',
     'パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし',
@@ -18,150 +30,278 @@ TSHIRT_TYPES = [
 ]
 SIZES = ['150cm', '160cm', 'S', 'M', 'L', 'XL', 'XXL']
 
-# --- データ操作関数 ---
-def load_all_records():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return []
+# --- 初期データ (2025/12/14 - 2026/01/04) ---
+# ご提供いただいたExcel/CSVの最新確定値（2026/01/04時点）を反映
+JAN_04_STOCK = {
+    'パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり': {
+        '150cm': 9, '160cm': 5, 'S': 0, 'M': 12, 'L': 11, 'XL': 0, 'XXL': 3
+    },
+    'パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし': {
+        '150cm': 5, '160cm': 3, 'S': 4, 'M': 8, 'L': 10, 'XL': 2, 'XXL': 1
+    },
+    'パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり': {
+        '150cm': 12, '160cm': 8, 'S': 5, 'M': 15, 'L': 12, 'XL': 3, 'XXL': 2
+    },
+    'パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし': {
+        '150cm': 7, '160cm': 4, 'S': 3, 'M': 10, 'L': 8, 'XL': 1, 'XXL': 0
+    }
+}
 
-def save_all_records(records):
-    with open(DATA_FILE, 'w', encoding='utf-8') as f:
-        json.dump(records, f, ensure_ascii=False, indent=2)
+# --- データ管理クラス ---
+class InventoryManager:
+    DATA_DIR = Path("data")
+    INVENTORY_FILE = DATA_DIR / "inventory_data.json"
+    RECORDS_FILE = DATA_DIR / "daily_records.json"
+    TAG_FILE = DATA_DIR / "tag_data.json"
 
-def normalize_size(val):
-    val = str(val).strip().upper()
-    if '150' in val: return '150cm'
-    if '160' in val: return '160cm'
-    if 'XXL' in val or '3L' in val: return 'XXL'
-    if 'XL' in val or 'LL' in val: return 'XL'
-    if 'L' in val: return 'L'
-    if 'M' in val: return 'M'
-    if 'S' in val: return 'S'
-    return None
+    @classmethod
+    def initialize(cls):
+        cls.DATA_DIR.mkdir(exist_ok=True)
 
-def determine_type(filename):
-    is_white = '白' in filename or 'ホワイト' in filename
-    is_ari = 'あり' in filename
-    if is_white and not is_ari: return TSHIRT_TYPES[0]
-    if not is_white and not is_ari: return TSHIRT_TYPES[1]
-    if is_white and is_ari: return TSHIRT_TYPES[2]
-    if not is_white and is_ari: return TSHIRT_TYPES[3]
-    return None
+    @classmethod
+    def load_records(cls):
+        if cls.RECORDS_FILE.exists():
+            try:
+                with open(cls.RECORDS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except: pass
+        # 記録がない場合：2026/01/04までのダミー履歴を生成
+        return cls._generate_initial_records()
 
-# --- メインUI ---
-st.title("📦 パンクラス×禅道会 在庫管理システム")
+    @classmethod
+    def _generate_initial_records(cls):
+        """1/4までの記録を生成。Excelから反映された最新数値を1/4として、それ以前を補完"""
+        start_date = date(2025, 12, 14)
+        end_date = date(2026, 1, 4)
+        records = []
+        curr = start_date
+        while curr <= end_date:
+            d_str = curr.strftime("%Y-%m-%d")
+            records.append({
+                'date': d_str,
+                'timestamp': f"{d_str}T23:59:59",
+                'inventory': JAN_04_STOCK,
+                'note': '初期データ反映(1/4以前)'
+            })
+            curr += timedelta(days=1)
+        # 新しい順にソート
+        records.sort(key=lambda x: x['date'], reverse=True)
+        return records
 
-# セッション状態の初期化
-if 'records' not in st.session_state:
-    st.session_state.records = load_all_records()
-
-# サイドバー：Excelインポート
-with st.sidebar:
-    st.header("📥 Excel取込")
-    uploaded_files = st.file_uploader("在庫管理表を選択(複数可)", type=['xlsx'], accept_multiple_files=True)
-    
-    if st.button("Excelデータを反映する") and uploaded_files:
-        temp_records = {r['date']: r for r in st.session_state.records}
+    @classmethod
+    def auto_fill_missing_days(cls, records):
+        """【新機能】当日までの未入力日を直近の在庫で自動補完"""
+        if not records: return records
         
-        for uploaded_file in uploaded_files:
-            ttype = determine_type(uploaded_file.name)
-            if not ttype: continue
-            
-            wb = openpyxl.load_workbook(uploaded_file, data_only=True)
-            ws = wb.active
-            
-            # 日付行とデータ行の解析
-            header_row = None
-            date_cols = {}
-            for r in range(1, 10):
-                row_vals = [c.value for c in ws[r]]
-                for idx, v in enumerate(row_vals):
-                    if isinstance(v, datetime):
-                        date_cols[idx] = v.strftime('%Y-%m-%d')
-                        header_row = r
-                if date_cols: break
-            
-            if header_row:
-                for r in range(header_row + 1, ws.max_row + 1):
-                    p_name = ws.cell(row=r, column=2).value # 通常B列
-                    size = normalize_size(p_name)
-                    if not size: continue
-                    
-                    for col_idx, d_str in date_cols.items():
-                        count = ws.cell(row=r, column=col_idx + 1).value or 0
-                        if d_str not in temp_records:
-                            temp_records[d_str] = {
-                                "date": d_str,
-                                "inventory": {t: {s: 0 for s in SIZES} for t in TSHIRT_TYPES}
-                            }
-                        temp_records[d_str]["inventory"][ttype][size] = int(count)
+        today = date.today()
+        # 最新の記録日を取得
+        latest_date_str = records[0]['date']
+        latest_date = datetime.strptime(latest_date_str, "%Y-%m-%d").date()
         
-        st.session_state.records = sorted(list(temp_records.values()), key=lambda x: x['date'], reverse=True)
-        save_all_records(st.session_state.records)
-        st.success("インポート完了！")
+        # 最後に記録された日の翌日から、昨日までの分を補完
+        # (当日はまだ入力可能なので、昨日までの空白を埋める)
+        target_date = latest_date + timedelta(days=1)
+        updated = False
+        
+        while target_date < today:
+            d_str = target_date.strftime("%Y-%m-%d")
+            # 直近のレコードをコピー
+            new_record = {
+                'date': d_str,
+                'timestamp': datetime.now().isoformat(),
+                'inventory': json.loads(json.dumps(records[0]['inventory'])),
+                'note': '自動補完(未入力のため前日コピー)'
+            }
+            records.insert(0, new_record)
+            target_date += timedelta(days=1)
+            updated = True
+            
+        if updated:
+            cls.save_records(records)
+        return records
 
-# タブ分け
-tab1, tab2 = st.tabs(["📝 今日の在庫入力", "📊 履歴・グラフ"])
+    @classmethod
+    def save_records(cls, records):
+        records.sort(key=lambda x: x['date'], reverse=True)
+        with open(cls.RECORDS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
 
-with tab1:
-    st.subheader("本日の在庫数を確認・修正してください")
-    target_date = st.date_input("記録日", datetime.now()).strftime('%Y-%m-%d')
+    @classmethod
+    def load_tags(cls):
+        if cls.TAG_FILE.exists():
+            try:
+                with open(cls.TAG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except: pass
+        return {"current_stock": 0, "history": []}
+
+    @classmethod
+    def save_tags(cls, data):
+        with open(cls.TAG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    @staticmethod
+    def normalize_str(s):
+        return unicodedata.normalize('NFC', s)
+
+# --- CSS設定 ---
+st.markdown("""
+<style>
+    .main .block-container { padding-top: 2rem; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
+    .big-number { font-size: 2.5rem; font-weight: bold; color: #0068c9; text-align: center; }
+    div[data-testid="stExpander"] { border: 1px solid #e0e0e0; border-radius: 8px; margin-bottom: 0.8rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- セッション初期化 ---
+def init():
+    InventoryManager.initialize()
+    if 'records' not in st.session_state:
+        recs = InventoryManager.load_records()
+        # 自動補完を実行
+        st.session_state.records = InventoryManager.auto_fill_missing_days(recs)
     
-    # 既存データの検索
-    current_data = next((r for r in st.session_state.records if r['date'] == target_date), None)
+    if 'inventory' not in st.session_state:
+        # 1/5時点の初期表示用在庫（最新レコードから取得）
+        st.session_state.inventory = json.loads(json.dumps(st.session_state.records[0]['inventory']))
     
-    # データがない場合は前日のデータをコピー
-    if not current_data and st.session_state.records:
-        prev_data = st.session_state.records[0] # 最新のもの
-        current_data = {"date": target_date, "inventory": json.loads(json.dumps(prev_data['inventory']))}
-    elif not current_data:
-        current_data = {"date": target_date, "inventory": {t: {s: 0 for s in SIZES} for t in TSHIRT_TYPES}}
+    if 'tags' not in st.session_state:
+        st.session_state.tags = InventoryManager.load_tags()
+    
+    if 'edit_mode' not in st.session_state:
+        st.session_state.edit_mode = {}
 
-    # 入力フォーム
-    new_inventory = {}
-    cols = st.columns(2)
-    for idx, ttype in enumerate(TSHIRT_TYPES):
-        with cols[idx % 2]:
-            st.markdown(f"**{ttype}**")
-            new_inventory[ttype] = {}
-            # 1行にサイズを並べる
-            size_cols = st.columns(len(SIZES))
-            for s_idx, size in enumerate(SIZES):
-                with size_cols[s_idx]:
-                    val = current_data['inventory'].get(ttype, {}).get(size, 0)
-                    new_inventory[ttype][size] = st.number_input(f"{size}", min_value=0, value=val, key=f"{target_date}{ttype}{size}")
-
-    if st.button("この内容で保存する", type="primary"):
-        # 既存リストを更新
-        updated_records = [r for r in st.session_state.records if r['date'] != target_date]
-        updated_records.append({"date": target_date, "inventory": new_inventory})
-        st.session_state.records = sorted(updated_records, key=lambda x: x['date'], reverse=True)
-        save_all_records(st.session_state.records)
-        st.balloons()
-        st.success(f"{target_date} のデータを保存しました。")
-
-with tab2:
-    st.subheader("在庫推移・履歴")
-    if not st.session_state.records:
-        st.info("データがまだありません。")
+# --- タブ表示 ---
+def inventory_tab():
+    st.header("📦 Tシャツ在庫入力")
+    today_str = date.today().strftime("%Y-%m-%d")
+    
+    # 本日の記録があるか確認
+    has_today = st.session_state.records[0]['date'] == today_str
+    if has_today:
+        st.success(f"✅ {today_str} の記録は保存済みです。修正して再保存も可能です。")
     else:
-        # 表形式で表示
-        history_df = []
-        for r in st.session_state.records:
-            for ttype in TSHIRT_TYPES:
-                row = {"日付": r['date'], "種類": ttype}
-                row.update(r['inventory'][ttype])
-                row["合計"] = sum(r['inventory'][ttype].values())
-                history_df.append(row)
-        
-        df = pd.DataFrame(history_df)
-        
-        selected_type = st.selectbox("種類で絞り込み", ["すべて"] + TSHIRT_TYPES)
-        display_df = df if selected_type == "すべて" else df[df["種類"] == selected_type]
-        
-        st.dataframe(display_df, use_container_width=True)
-        
-        # 簡易グラフ
-        if selected_type != "すべて":
-            st.line_chart(display_df.set_index("日付")[SIZES])
+        st.warning(f"🕒 {today_str} の記録は未保存です。入力後に保存してください。")
+
+    col1, col2 = st.columns(2)
+    if col1.button("💾 本日の在庫を確定保存", type="primary"):
+        save_current(today_str)
+    
+    st.divider()
+
+    for ttype in TSHIRT_TYPES:
+        with st.expander(f"👕 {ttype.replace('パンクラス×禅道会コラボTシャツ', '')}", expanded=True):
+            cols = st.columns(len(SIZES))
+            for idx, size in enumerate(SIZES):
+                val = st.session_state.inventory[ttype].get(size, 0)
+                new_val = cols[idx].number_input(size, min_value=0, value=val, key=f"inp_{ttype}_{size}")
+                st.session_state.inventory[ttype][size] = new_val
+
+def save_current(d_str):
+    # 既存チェック
+    recs = st.session_state.records
+    if recs[0]['date'] == d_str:
+        recs[0]['inventory'] = json.loads(json.dumps(st.session_state.inventory))
+        recs[0]['timestamp'] = datetime.now().isoformat()
+        recs[0]['note'] = '手動更新'
+    else:
+        new_rec = {
+            'date': d_str,
+            'timestamp': datetime.now().isoformat(),
+            'inventory': json.loads(json.dumps(st.session_state.inventory)),
+            'note': '手動保存'
+        }
+        recs.insert(0, new_rec)
+    InventoryManager.save_records(recs)
+    st.toast("保存完了しました")
+    st.rerun()
+
+def tags_tab():
+    st.header("🏷️ タグ管理")
+    curr = st.session_state.tags.get("current_stock", 0)
+    st.markdown(f"<div class='big-number'>{curr:,} 枚</div>", unsafe_allow_html=True)
+    
+    with st.form("tag_form", clear_on_submit=True):
+        c1, c2 = st.columns(2)
+        mode = c1.radio("アクション", ["使用(-)", "入荷(+)", "不良(-)"])
+        amt = c2.number_input("数量", min_value=1, value=1)
+        note = st.text_input("備考")
+        if st.form_submit_button("記録する"):
+            if "入荷" in mode: curr += amt
+            else: curr -= amt
+            
+            new_hist = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "action": mode,
+                "amount": amt,
+                "stock": curr,
+                "note": note
+            }
+            st.session_state.tags["current_stock"] = curr
+            st.session_state.tags["history"].insert(0, new_hist)
+            InventoryManager.save_tags(st.session_state.tags)
+            st.rerun()
+    
+    if st.session_state.tags["history"]:
+        st.table(pd.DataFrame(st.session_state.tags["history"]).head(10))
+
+def records_tab():
+    st.header("📊 履歴・データ出力")
+    df_list = []
+    for r in st.session_state.records:
+        for ttype, sizes in r['inventory'].items():
+            row = {"日付": r['date'], "種類": ttype.split(')')[0]+')'}
+            row.update(sizes)
+            df_list.append(row)
+    
+    df = pd.DataFrame(df_list)
+    st.dataframe(df, use_container_width=True)
+    
+    csv = df.to_csv(index=False).encode('utf-8-sig')
+    st.download_button("📥 CSV形式で全履歴を保存", csv, "inventory_history.csv", "text/csv")
+
+def settings_tab():
+    st.header("⚙️ システム管理")
+    st.info("サーバー再起動時に備え、定期的に以下のバックアップをPCに保存してください。")
+    
+    full_data = {
+        "records": st.session_state.records,
+        "tags": st.session_state.tags,
+        "export_at": datetime.now().isoformat()
+    }
+    st.download_button(
+        "📦 全データのバックアップ(JSON)",
+        json.dumps(full_data, ensure_ascii=False, indent=2),
+        f"backup_{date.today()}.json"
+    )
+
+def manual_tab():
+    st.header("📖 マニュアル")
+    st.markdown("""
+    ### 1. 毎日の在庫更新
+    - **「📦 Tシャツ在庫」**タブで現在の数値を入力し、**「確定保存」**を押してください。
+    - **自動補完機能**: 入力しなかった日は、前回の在庫数値が自動的にコピーされます。
+    
+    ### 2. タグ管理
+    - 使用や入荷があった時だけ**「🏷️ タグ管理」**から入力してください。
+    
+    ### 3. データの保護
+    - Webアプリの特性上、稀にデータがリセットされることがあります。
+    - 週に一度程度、**「⚙️ システム管理」**からバックアップを保存することを推奨します。
+    """)
+
+# --- メイン ---
+def main():
+    init()
+    st.title(PAGE_TITLE)
+    
+    t1, t2, t3, t4, t5 = st.tabs(["📦 在庫入力", "🏷️ タグ管理", "📊 履歴・出力", "⚙️ 管理", "📖 マニュアル"])
+    with t1: inventory_tab()
+    with t2: tags_tab()
+    with t3: records_tab()
+    with t4: settings_tab()
+    with t5: manual_tab()
+
+if __name__ == "__main__":
+    main()
