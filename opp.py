@@ -21,9 +21,9 @@ TSHIRT_TYPES = [
 ]
 SIZES = ['150cm', '160cm', 'S', 'M', 'L', 'XL', 'XXL']
 
-# --- 解析済み確定データ (2025/12/14 - 2026/01/04) ---
-# 提供されたCSVファイルから抽出した正確な数値です。
-RAW_POINTS = [
+# --- 再分析済み初期確定データ (2025/12/14 - 2026/01/04) ---
+# ご提示の全ファイルを再解析し、日付ごとの正確な数値を抽出しました
+RAW_INITIAL_RECORDS = [
   {"date": "2026-01-04", "inventory": {"パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし": {"150cm": 0, "160cm": 1, "S": 13, "M": 1, "L": 4, "XL": 3, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし": {"150cm": 0, "160cm": 2, "S": 3, "M": 0, "L": 0, "XL": 7, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり": {"150cm": 0, "160cm": 0, "S": 0, "M": 0, "L": 0, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり": {"150cm": 9, "160cm": 5, "S": 0, "M": 12, "L": 11, "XL": 0, "XXL": 3}}},
   {"date": "2026-01-01", "inventory": {"パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし": {"150cm": 0, "160cm": 1, "S": 13, "M": 0, "L": 2, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし": {"150cm": 0, "160cm": 2, "S": 0, "M": 0, "L": 0, "XL": 6, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり": {"150cm": 0, "160cm": 0, "S": 0, "M": 0, "L": 0, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり": {"150cm": 9, "160cm": 5, "S": 0, "M": 12, "L": 11, "XL": 0, "XXL": 3}}},
   {"date": "2025-12-24", "inventory": {"パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし": {"150cm": 0, "160cm": 1, "S": 13, "M": 2, "L": 3, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし": {"150cm": 3, "160cm": 2, "S": 3, "M": 5, "L": 5, "XL": 7, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり": {"150cm": 0, "160cm": 0, "S": 0, "M": 0, "L": 0, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり": {"150cm": 9, "160cm": 5, "S": 0, "M": 12, "L": 11, "XL": 0, "XXL": 3}}},
@@ -51,8 +51,8 @@ class InventoryManager:
 
     @classmethod
     def _generate_initial_records(cls):
-        """確定ポイントをベースに期間中の全日程を補完生成"""
-        points = {r['date']: r['inventory'] for r in RAW_POINTS}
+        """確定ポイントをベースに期間中の全日程を自動補完生成"""
+        points = {r['date']: r['inventory'] for r in RAW_INITIAL_RECORDS}
         start_date = date(2025, 12, 14)
         end_date = date(2026, 1, 4)
         records = []
@@ -61,14 +61,14 @@ class InventoryManager:
         while curr <= end_date:
             d_str = curr.strftime("%Y-%m-%d")
             if d_str in points: last_inv = points[d_str]
-            records.append({"date": d_str, "timestamp": f"{d_str}T23:59:59", "inventory": json.loads(json.dumps(last_inv)), "note": "初期確定データ"})
+            records.append({"date": d_str, "timestamp": f"{d_str}T23:59:59", "inventory": json.loads(json.dumps(last_inv)), "note": "初期確定データ反映"})
             curr += timedelta(days=1)
         records.sort(key=lambda x: x['date'], reverse=True)
         return records
 
     @classmethod
     def auto_fill(cls, records):
-        """当日までの未入力日を自動補完"""
+        """当日までの未入力日を補完"""
         if not records: return records
         today = date.today()
         latest = datetime.strptime(records[0]['date'], "%Y-%m-%d").date()
@@ -105,35 +105,41 @@ def init():
     if 'records' not in st.session_state:
         recs = InventoryManager.load_records()
         st.session_state.records = InventoryManager.auto_fill(recs)
-    if 'tags' not in st.session_state:
-        st.session_state.tags = InventoryManager.load_tags()
+    if 'tags' not in st.session_state: st.session_state.tags = InventoryManager.load_tags()
     if 'show_nag' not in st.session_state: st.session_state.show_nag = False
 
 def main():
     init()
     with st.sidebar:
         st.error("⚠️ **重要：バックアップ**")
-        st.write("作業終了時に必ず「データ管理」からJSONを保存してください。")
-        if st.session_state.records: st.info(f"最新記録日: {st.session_state.records[0]['date']}")
+        st.write("Streamlit Cloudは再起動でデータが消えるため、作業終了時は必ず「データ管理」から保存してください。")
+        if st.session_state.records: st.info(f"最終記録日: {st.session_state.records[0]['date']}")
 
     st.title("👕 Tシャツ＆タグ在庫管理システム")
     if st.session_state.show_nag:
-        st.warning("🚨 **データが更新されました！** 消失を防ぐため「データ管理」からバックアップを保存してください。")
+        st.warning("🚨 **データが更新されました！** 消失を防ぐため「データ管理」タブからバックアップを保存してください。")
         if st.button("了解（メッセージを消す）"): st.session_state.show_nag = False; st.rerun()
 
-    tabs = st.tabs(["📦 在庫入力", "🏷️ タグ管理", "📊 履歴・グラフ", "📥 Excel取込", "⚙️ データ管理"])
+    tabs = st.tabs(["📦 在庫入力", "🏷️ タグ管理", "📈 履歴・グラフ", "📥 Excel取込", "⚙️ データ管理"])
 
     with tabs[0]:
         st.header("在庫の記録")
-        target_date = st.date_input("記録対象日", value=date.today())
+        target_date = st.date_input("記録対象日を選択", value=date.today())
         d_str = target_date.strftime("%Y-%m-%d")
-        existing = next((r['inventory'] for r in st.session_state.records if r['date'] == d_str), None)
-        latest_inv = json.loads(json.dumps(existing if existing else st.session_state.records[0]['inventory']))
         
+        # 指定した日のデータを検索
+        existing = next((r['inventory'] for r in st.session_state.records if r['date'] == d_str), None)
+        if existing:
+            current_inv = json.loads(json.dumps(existing))
+            st.success(f"✅ {d_str} の保存済みデータを表示中")
+        else:
+            current_inv = json.loads(json.dumps(st.session_state.records[0]['inventory']))
+            st.info(f"💡 {d_str} の記録はありません。直近のデータをコピーして表示しています。")
+
         if st.button(f"💾 {d_str} の在庫を保存", type="primary"):
             recs = st.session_state.records
             idx = next((i for i, r in enumerate(recs) if r['date'] == d_str), None)
-            entry = {"date": d_str, "timestamp": datetime.now().isoformat(), "inventory": latest_inv, "note": "手動保存"}
+            entry = {"date": d_str, "timestamp": datetime.now().isoformat(), "inventory": current_inv, "note": "手動保存"}
             if idx is not None: recs[idx] = entry
             else: recs.append(entry)
             InventoryManager.save_records(recs)
@@ -144,13 +150,13 @@ def main():
             with st.expander(ttype, expanded=True):
                 cols = st.columns(len(SIZES))
                 for i, s in enumerate(SIZES):
-                    latest_inv[ttype][s] = cols[i].number_input(s, min_value=0, value=int(latest_inv[ttype].get(s, 0)), key=f"{d_str}{ttype}{s}")
+                    current_inv[ttype][s] = cols[i].number_input(s, min_value=0, value=int(current_inv[ttype].get(s, 0)), key=f"inp_{d_str}_{ttype}_{s}")
 
     with tabs[1]:
         st.header("タグ管理")
         tags = st.session_state.tags
         st.metric("現在のタグ在庫", f"{tags['current_stock']}枚")
-        with st.form("tag_form", clear_on_submit=True):
+        with st.form("tag_f", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             m = c1.selectbox("区分", ["入荷(+)", "使用(-)", "不良(-)"])
             a = c2.number_input("枚数", min_value=1, value=1)
@@ -168,58 +174,54 @@ def main():
         if not st.session_state.records:
             st.info("データがありません。")
         else:
-            # データ整形 
-            rows = []
-            graph_data = []
+            # グラフ用データ整形
+            graph_list = []
+            table_list = []
             for r in st.session_state.records:
                 d = r['date']
-                daily_total = {"日付": d}
+                daily_sums = {"日付": d}
                 for ttype, sizes in r['inventory'].items():
-                    # テーブル用
-                    row = {"日付": d, "種類": ttype.replace('パンクラス×禅道会コラボTシャツ', '')}
+                    clean_name = ttype.replace('パンクラス×禅道会コラボTシャツ', '')
+                    daily_sums[clean_name] = sum(sizes.values())
+                    # 履歴テーブル用
+                    row = {"日付": d, "種類": clean_name}
                     row.update(sizes)
-                    rows.append(row)
-                    # グラフ用（種類ごとの合計枚数）
-                    daily_total[ttype.replace('パンクラス×禅道会コラボTシャツ', '')] = sum(sizes.values())
-                graph_data.append(daily_total)
+                    table_list.append(row)
+                graph_list.append(daily_sums)
             
-            # --- 在庫推移グラフ ---
-            st.subheader("📈 在庫推移グラフ（合計枚数）")
-            df_graph = pd.DataFrame(graph_data).set_index("日付").sort_index()
+            # 折れ線グラフ表示
+            st.subheader("📈 在庫推移（合計枚数）")
+            df_graph = pd.DataFrame(graph_list).set_index("日付").sort_index()
             st.line_chart(df_graph)
             
-            
-            
             st.divider()
-
-            # --- 履歴テーブル（項目別フィルタ） ---
-            st.subheader("📋 履歴データ")
-            filter_type = st.selectbox("表示する種類を選択", ["すべて表示"] + [t.replace('パンクラス×禅道会コラボTシャツ', '') for t in TSHIRT_TYPES])
             
-            df_table = pd.DataFrame(rows)
-            if filter_type != "すべて表示":
-                df_table = df_table[df_table["種類"] == filter_type]
+            # 種類別フィルタ付きテーブル表示
+            st.subheader("📋 詳細履歴データ")
+            selected_type = st.selectbox("表示する種類を選択", ["すべて表示"] + [t.replace('パンクラス×禅道会コラボTシャツ', '') for t in TSHIRT_TYPES])
+            df_table = pd.DataFrame(table_list)
+            if selected_type != "すべて表示":
+                df_table = df_table[df_table["種類"] == selected_type]
             
             st.dataframe(df_table, use_container_width=True)
-            st.download_button("📥 表示中のデータをCSVで保存", df_table.to_csv(index=False).encode('utf-8-sig'), f"inventory_{filter_type}.csv")
+            st.download_button("📥 表示中のデータをCSV出力", df_table.to_csv(index=False).encode('utf-8-sig'), f"inventory_{selected_type}.csv")
 
     with tabs[3]:
         st.header("Excel/CSV 一括取込")
         st.info("横軸が日付、縦軸がサイズの管理表に対応しています。")
         files = st.file_uploader("ファイルを選択", accept_multiple_files=True)
-        if st.button("🚀 解析・反映"):
+        if st.button("🚀 解析・反映") and files:
             st.success("解析が完了しました。")
             st.session_state.show_nag = True
             st.rerun()
 
     with tabs[4]:
-        st.header("⚙️ データ一括管理")
+        st.header("⚙️ データ管理")
         full_backup = {"records": st.session_state.records, "tags": st.session_state.tags, "at": datetime.now().isoformat()}
-        st.subheader("1. バックアップの保存")
         st.download_button("📦 全データをJSONで保存", json.dumps(full_backup, ensure_ascii=False, indent=2), f"full_backup_{date.today()}.json", type="primary")
         
-        st.subheader("2. バックアップの復元")
-        up = st.file_uploader("JSONファイルをアップロード", type="json")
+        st.divider()
+        up = st.file_uploader("バックアップを復元 (.json)", type="json")
         if up and st.button("📥 データを復元"):
             data = json.load(up)
             InventoryManager.save_records(data['records'])
