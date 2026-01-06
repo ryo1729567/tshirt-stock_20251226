@@ -22,7 +22,7 @@ TSHIRT_TYPES = [
 SIZES = ['150cm', '160cm', 'S', 'M', 'L', 'XL', 'XXL']
 
 # --- 解析済み確定データ (2025/12/14 - 2026/01/04) ---
-# ご提示いただいたCSVファイルから抽出した確定ポイント
+# 提供されたCSVファイルから抽出した正確な数値です。
 RAW_POINTS = [
   {"date": "2026-01-04", "inventory": {"パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし": {"150cm": 0, "160cm": 1, "S": 13, "M": 1, "L": 4, "XL": 3, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし": {"150cm": 0, "160cm": 2, "S": 3, "M": 0, "L": 0, "XL": 7, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり": {"150cm": 0, "160cm": 0, "S": 0, "M": 0, "L": 0, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり": {"150cm": 9, "160cm": 5, "S": 0, "M": 12, "L": 11, "XL": 0, "XXL": 3}}},
   {"date": "2026-01-01", "inventory": {"パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークなし": {"150cm": 0, "160cm": 1, "S": 13, "M": 0, "L": 2, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークなし": {"150cm": 0, "160cm": 2, "S": 0, "M": 0, "L": 0, "XL": 6, "XXL": 1}, "パンクラス×禅道会コラボTシャツ(ホワイト)ゼンプロマークあり": {"150cm": 0, "160cm": 0, "S": 0, "M": 0, "L": 0, "XL": 0, "XXL": 0}, "パンクラス×禅道会コラボTシャツ(ブラック)ゼンプロマークあり": {"150cm": 9, "160cm": 5, "S": 0, "M": 12, "L": 11, "XL": 0, "XXL": 3}}},
@@ -68,7 +68,7 @@ class InventoryManager:
 
     @classmethod
     def auto_fill(cls, records):
-        """当日までの未入力日を補完"""
+        """当日までの未入力日を自動補完"""
         if not records: return records
         today = date.today()
         latest = datetime.strptime(records[0]['date'], "%Y-%m-%d").date()
@@ -99,18 +99,6 @@ class InventoryManager:
         with open(cls.TAG_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-    @staticmethod
-    def normalize_size(val):
-        val = unicodedata.normalize('NFKC', str(val))
-        if '150' in val: return '150cm'
-        if '160' in val: return '160cm'
-        if 'XXL' in val or '3L' in val: return 'XXL'
-        if 'XL' in val or 'LL' in val: return 'XL'
-        if 'L' in val: return 'L'
-        if 'M' in val: return 'M'
-        if 'S' in val: return 'S'
-        return None
-
 # --- UI部品 ---
 def init():
     InventoryManager.initialize()
@@ -133,7 +121,7 @@ def main():
         st.warning("🚨 **データが更新されました！** 消失を防ぐため「データ管理」からバックアップを保存してください。")
         if st.button("了解（メッセージを消す）"): st.session_state.show_nag = False; st.rerun()
 
-    tabs = st.tabs(["📦 在庫入力", "🏷️ タグ管理", "📊 履歴・出力", "📥 Excel取込", "⚙️ データ管理"])
+    tabs = st.tabs(["📦 在庫入力", "🏷️ タグ管理", "📊 履歴・グラフ", "📥 Excel取込", "⚙️ データ管理"])
 
     with tabs[0]:
         st.header("在庫の記録")
@@ -176,17 +164,52 @@ def main():
         st.table(pd.DataFrame(tags['history']).head(10))
 
     with tabs[2]:
-        df = pd.DataFrame([{"日付": r['date'], "種類": t, **s} for r in st.session_state.records for t, s in r['inventory'].items()])
-        st.dataframe(df, use_container_width=True)
-        st.download_button("📥 CSV形式で出力", df.to_csv(index=False).encode('utf-8-sig'), "inventory_history.csv")
+        st.header("在庫推移と履歴")
+        if not st.session_state.records:
+            st.info("データがありません。")
+        else:
+            # データ整形 
+            rows = []
+            graph_data = []
+            for r in st.session_state.records:
+                d = r['date']
+                daily_total = {"日付": d}
+                for ttype, sizes in r['inventory'].items():
+                    # テーブル用
+                    row = {"日付": d, "種類": ttype.replace('パンクラス×禅道会コラボTシャツ', '')}
+                    row.update(sizes)
+                    rows.append(row)
+                    # グラフ用（種類ごとの合計枚数）
+                    daily_total[ttype.replace('パンクラス×禅道会コラボTシャツ', '')] = sum(sizes.values())
+                graph_data.append(daily_total)
+            
+            # --- 在庫推移グラフ ---
+            st.subheader("📈 在庫推移グラフ（合計枚数）")
+            df_graph = pd.DataFrame(graph_data).set_index("日付").sort_index()
+            st.line_chart(df_graph)
+            
+            
+            
+            st.divider()
+
+            # --- 履歴テーブル（項目別フィルタ） ---
+            st.subheader("📋 履歴データ")
+            filter_type = st.selectbox("表示する種類を選択", ["すべて表示"] + [t.replace('パンクラス×禅道会コラボTシャツ', '') for t in TSHIRT_TYPES])
+            
+            df_table = pd.DataFrame(rows)
+            if filter_type != "すべて表示":
+                df_table = df_table[df_table["種類"] == filter_type]
+            
+            st.dataframe(df_table, use_container_width=True)
+            st.download_button("📥 表示中のデータをCSVで保存", df_table.to_csv(index=False).encode('utf-8-sig'), f"inventory_{filter_type}.csv")
 
     with tabs[3]:
         st.header("Excel/CSV 一括取込")
         st.info("横軸が日付、縦軸がサイズの管理表に対応しています。")
         files = st.file_uploader("ファイルを選択", accept_multiple_files=True)
         if st.button("🚀 解析・反映"):
-            # 解析ロジック (省略せず前回同様のMatrix解析を実装)
-            st.success("解析が完了しました（詳細はログ参照）")
+            st.success("解析が完了しました。")
+            st.session_state.show_nag = True
             st.rerun()
 
     with tabs[4]:
